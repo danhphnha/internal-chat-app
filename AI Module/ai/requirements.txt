@@ -1,0 +1,14 @@
+aiofiles
+fastapi
+uvicorn
+
+qdrant-client
+sentence-transformers
+underthesea
+pypdf
+python-docx
+
+# Optional runtime dependencies (if using GPU/models):
+# torch
+# transformers
+# sentence-transformers

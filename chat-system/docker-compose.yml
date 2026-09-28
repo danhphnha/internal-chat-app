@@ -1,0 +1,290 @@
+name: secretchat
+
+services:
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:15.0.2
+    hostname: mail.gitlab.handbook.local
+    environment:
+      ACCOUNT_PROVISIONER: FILE
+      SSL_TYPE: ""
+      ENABLE_IMAP: 1
+      ENABLE_POP3: 0
+      ENABLE_CLAMAV: 0
+      ENABLE_RSPAMD: 0
+      ENABLE_FAIL2BAN: 0
+      ENABLE_AMAVIS: 0
+      ENABLE_POSTGREY: 0
+      ENABLE_OPENDKIM: 0
+      ENABLE_OPENDMARC: 0
+      PERMIT_DOCKER: connected-networks
+      POSTMASTER_ADDRESS: admin@gitlab.handbook.local
+      SPOOF_PROTECTION: 1
+      ONE_DIR: 1
+      TZ: Asia/Bangkok
+    volumes:
+      - mail_data:/var/mail
+      - mail_state:/var/mail-state
+      - mail_logs:/var/log/mail
+      - mail_config:/tmp/docker-mailserver
+    networks:
+      mail-network:
+        aliases:
+          - mail.gitlab.handbook.local
+    restart: unless-stopped
+
+  mail-account-manager:
+    build:
+      context: ../mail-service/account-manager
+    environment:
+      MAILSERVER_CONTAINER: secretchat-mailserver-1
+      MAIL_DOMAIN: gitlab.handbook.local
+      IMAP_HOST: mail.gitlab.handbook.local
+      IMAP_PORT: 143
+      IMAP_USE_SSL: "false"
+      INITIAL_ADMIN_EMAIL: admin@gitlab.handbook.local
+      INITIAL_ADMIN_PASSWORD: admin123
+      TZ: Asia/Bangkok
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - mail_config:/mail-config
+    depends_on:
+      - mailserver
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks:
+      - mail-network
+    restart: unless-stopped
+
+  roundcube-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: roundcube
+      POSTGRES_USER: roundcube
+      POSTGRES_PASSWORD: roundcube
+    volumes:
+      - roundcube_db_data:/var/lib/postgresql/data
+    networks:
+      - mail-network
+    restart: unless-stopped
+
+  roundcube:
+    image: phuongnha/roundcube:latest
+    ports:
+      - "8085:80"
+    environment:
+      ROUNDCUBEMAIL_DB_TYPE: pgsql
+      ROUNDCUBEMAIL_DB_HOST: roundcube-db
+      ROUNDCUBEMAIL_DB_PORT: 5432
+      ROUNDCUBEMAIL_DB_NAME: roundcube
+      ROUNDCUBEMAIL_DB_USER: roundcube
+      ROUNDCUBEMAIL_DB_PASSWORD: roundcube
+      ROUNDCUBEMAIL_DEFAULT_HOST: mail.gitlab.handbook.local
+      ROUNDCUBEMAIL_DEFAULT_PORT: 143
+      ROUNDCUBEMAIL_SMTP_SERVER: mail.gitlab.handbook.local
+      ROUNDCUBEMAIL_SMTP_PORT: 25
+      ROUNDCUBEMAIL_USERNAME_DOMAIN: gitlab.handbook.local
+      ROUNDCUBEMAIL_PLUGINS: archive,zipdownload,password
+      ROUNDCUBEMAIL_UPLOAD_MAX_FILESIZE: 50M
+    depends_on:
+      mail-account-manager:
+        condition: service_healthy
+      roundcube-db:
+        condition: service_started
+    networks:
+      - mail-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: user_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6.2
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/user_db
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: http://localhost:8081
+    command: ["start", "--import-realm"]
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/localhost/8080'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks:
+      - default
+      - mail-network
+    restart: unless-stopped
+
+  user-service:
+    build:
+      context: ../user-service
+    image: secretchat-user-service:local
+    environment:
+      SERVER_PORT: 8082
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: user_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      KEYCLOAK_SERVER_URL: http://keycloak:8080
+      KEYCLOAK_REALM: master
+      KEYCLOAK_CLIENT_ID: javafx-client
+      KEYCLOAK_ADMIN_CLIENT_ID: javafx-client
+      KEYCLOAK_ADMIN_USERNAME: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI: http://localhost:8081/realms/master
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:8080/realms/master/protocol/openid-connect/certs
+      INTERNAL_MAIL_DOMAIN: gitlab.handbook.local
+      MAIL_ACCOUNT_API_URL: http://mail-account-manager:8080
+      WEBMAIL_URL: http://localhost:8085/
+      MAILBOX_QUOTA_BYTES: 104857600
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      mail-account-manager:
+        condition: service_healthy
+    networks:
+      - default
+      - mail-network
+    restart: unless-stopped
+
+  chat-postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: chat_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - chat_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  chat-service:
+    build:
+      context: ../chat-service
+    image: secretchat-chat-service:local
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SERVER_PORT: 8083
+      DB_HOST: chat-postgres
+      DB_PORT: 5432
+      DB_NAME: chat_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      USER_SERVICE_URL: http://user-service:8082
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      PRESENCE_TTL: 75s
+      KEYCLOAK_SERVER_URL: http://keycloak:8080
+      KEYCLOAK_REALM: master
+      JWT_ISSUER_URI: http://localhost:8081/realms/master
+      JWT_JWK_SET_URI: http://keycloak:8080/realms/master/protocol/openid-connect/certs
+    depends_on:
+      user-service:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    volumes:
+      - chat_uploads:/app/uploads
+    restart: unless-stopped
+
+  ai-rag-bot:
+    image: phuongnha/ai-rag-bot:latest
+    environment:
+      SERVER_PORT: 3000
+      OLLAMA_URL: http://host.docker.internal:11434/api/generate
+      PYTHONUNBUFFERED: 1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+
+  api-gateway:
+    build:
+      context: ../api-gateway
+    image: secretchat-api-gateway:local
+    ports:
+      - "8088:8088"
+    environment:
+      SERVER_PORT: 8088
+      KEYCLOAK_SERVER_URL: http://keycloak:8080
+      KEYCLOAK_ISSUER_URI: http://localhost:8081
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/realms/master/protocol/openid-connect/certs
+      KEYCLOAK_REALM: master
+      USER_SERVICE_HOST: user-service
+      USER_SERVICE_PORT: 8082
+      CHAT_SERVICE_HOST: chat-service
+      CHAT_SERVICE_PORT: 8083
+      AI_RAG_BOT_HOST: ai-rag-bot
+      AI_RAG_BOT_PORT: 3000
+      FRONTEND_URL: http://localhost:3000
+      SPRING_CLOUD_GATEWAY_ROUTES_0_ID: user-service-api
+      SPRING_CLOUD_GATEWAY_ROUTES_0_URI: http://user-service:8082
+      SPRING_CLOUD_GATEWAY_ROUTES_0_PREDICATES_0: Path=/api/users/**
+      SPRING_CLOUD_GATEWAY_ROUTES_1_ID: chat-service-api
+      SPRING_CLOUD_GATEWAY_ROUTES_1_URI: http://chat-service:8083
+      SPRING_CLOUD_GATEWAY_ROUTES_1_PREDICATES_0: Path=/api/user/**,/api/conversations/**,/api/groups/**,/api/messages/**,/api/friends/**,/api/presence/**
+      SPRING_CLOUD_GATEWAY_ROUTES_2_ID: chat-service-websocket
+      SPRING_CLOUD_GATEWAY_ROUTES_2_URI: ws://chat-service:8083
+      SPRING_CLOUD_GATEWAY_ROUTES_2_PREDICATES_0: Path=/ws,/ws/**
+      SPRING_CLOUD_GATEWAY_ROUTES_3_ID: ai-rag-bot-api
+      SPRING_CLOUD_GATEWAY_ROUTES_3_URI: http://ai-rag-bot:3000
+      SPRING_CLOUD_GATEWAY_ROUTES_3_PREDICATES_0: Path=/api/ai/**
+      SPRING_CLOUD_GATEWAY_ROUTES_3_FILTERS_0: StripPrefix=2
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      chat-service:
+        condition: service_started
+      ai-rag-bot:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  chat_postgres_data:
+  chat_uploads:
+  mail_data:
+  mail_state:
+  mail_logs:
+  mail_config:
+  roundcube_db_data:
+  redis_data:
+
+networks:
+  mail-network:

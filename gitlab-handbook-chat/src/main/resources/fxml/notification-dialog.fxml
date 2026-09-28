@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import org.kordamp.ikonli.javafx.FontIcon?>
+
+<VBox xmlns="http://javafx.com/javafx"
+      xmlns:fx="http://javafx.com/fxml"
+      fx:id="dialogRoot"
+      fx:controller="secretchat.chat.controller.NotificationDialogController"
+      stylesheets="@../css/dialog-common.css"
+      styleClass="dialog-root"
+      spacing="0"
+      prefWidth="420">
+
+    <!-- HEADER -->
+    <HBox styleClass="dialog-header" alignment="CENTER_LEFT" spacing="12">
+        <padding>
+            <Insets top="20" right="24" bottom="20" left="24"/>
+        </padding>
+
+        <StackPane styleClass="dialog-icon-box">
+            <FontIcon fx:id="iconLabel"
+                      iconLiteral="fa-info-circle"
+                      styleClass="dialog-icon"/>
+        </StackPane>
+
+        <VBox spacing="2">
+            <Label fx:id="titleLabel" text="Thông báo" styleClass="dialog-title"/>
+        </VBox>
+    </HBox>
+
+    <!-- BODY -->
+    <VBox spacing="16" styleClass="dialog-body">
+        <padding>
+            <Insets top="24" right="24" bottom="24" left="24"/>
+        </padding>
+        <Label fx:id="messageLabel" text="Nội dung thông báo" styleClass="dialog-caption" wrapText="true" />
+    </VBox>
+
+    <!-- FOOTER -->
+    <HBox spacing="12" alignment="CENTER_RIGHT" styleClass="dialog-footer">
+        <padding>
+            <Insets top="20" right="24" bottom="24" left="24"/>
+        </padding>
+
+        <Button fx:id="okButton" text="OK"
+                onAction="#handleOk"
+                styleClass="primary-btn"
+                defaultButton="true"/>
+    </HBox>
+
+</VBox>

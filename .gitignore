@@ -1,0 +1,7 @@
+# Local environment overrides
+**/.env
+!**/.env.example
+
+Chuong_2_Phuong_Phap_Va_Noi_Dung_Nghien_Cuu.html
+Chuong_3_Giai_Phap_Cho_Bai_Toan.html
+Chuong_3_Giai_Phap_Cho_Bai_Toan.pdf
